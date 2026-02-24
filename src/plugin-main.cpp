@@ -152,9 +152,9 @@ void update(void *d, obs_data_t *settings) {
 
 obs_properties_t *properties(void *) {
     obs_properties_t *props = obs_properties_create();
-    obs_properties_add_path(props, "folder", obs_module_text("Folder"), OBS_PATH_DIRECTORY, nullptr, nullptr);
-    obs_properties_add_bool(props, "random_transform", obs_module_text("Apply Random Transform on Show"));
-    obs_properties_add_bool(props, "hide_on_end", obs_module_text("Hide when playback ends"));
+    obs_properties_add_path(props, "folder", "Папка", OBS_PATH_DIRECTORY, nullptr, nullptr);
+    obs_properties_add_bool(props, "random_transform", "Применять случайный трансформ при показе");
+    obs_properties_add_bool(props, "hide_on_end", "Скрывать после окончания воспроизведения");
     return props;
 }
 
