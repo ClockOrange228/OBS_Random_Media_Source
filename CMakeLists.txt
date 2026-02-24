@@ -44,3 +44,13 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+# Игнорируем unresolved symbols (OBS предоставит их при загрузке плагина)
+if(MSVC)
+  target_link_options(${CMAKE_PROJECT_NAME} PRIVATE /IGNORE:4217,4049,4006)
+else()
+  target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    LINKER:--unresolved-symbols=ignore-all
+    LINKER:--warn-unresolved-symbols
+  )
+endif()
