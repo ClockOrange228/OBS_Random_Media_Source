@@ -26,24 +26,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 #include <ctime>
 
-// Структура данных для источника (менеджер)
+// Структура данных для источника
 struct random_media_data {
     obs_source_t *source;  // Сам источник
+    obs_source_t *internal;  // Внутренний ffmpeg_source
     std::string folder;
     bool do_random_transform;
     bool hide_on_end;
-    float min_scale;
-    float max_scale;
-    float min_rot;
-    float max_rot;
-    bool disable_rot;
-    bool preserve_aspect;
-    int min_x;
-    int min_y;
-    int max_x;
-    int max_y;
-    bool allow_multiple;
-    std::vector<std::string> file_list;  // Список файлов из папки
+    signal_handler_t *media_signals;
+    std::vector<std::string> file_list;
 };
 
 // Список поддерживаемых расширений
@@ -72,121 +63,88 @@ void update_file_list(random_media_data *data) {
 }
 
 static void on_media_ended(void *param, calldata_t *cd) {
-    obs_sceneitem_t *item = static_cast<obs_sceneitem_t *>(param);
-    obs_sceneitem_remove(item);
-    obs_sceneitem_release(item);
+    random_media_data *data = static_cast<random_media_data *>(param);
+    obs_source_set_hidden(data->source, true);
+    blog(LOG_INFO, "Media ended - hiding source");
 }
 
-void spawn_random_media(random_media_data *data) {
-    if (data->file_list.empty()) return;
+void pick_random_file(random_media_data *data) {
+    if (data->file_list.empty()) {
+        blog(LOG_WARNING, "No media files found in folder");
+        return;
+    }
 
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> dis(0, static_cast<int>(data->file_list.size() - 1));
     std::string random_file = data->file_list[dis(gen)];
 
+    blog(LOG_INFO, "Selected random file: %s", random_file.c_str());
+
     obs_data_t *internal_settings = obs_data_create();
     obs_data_set_string(internal_settings, "local_file", random_file.c_str());
     obs_data_set_bool(internal_settings, "is_local_file", true);
-    obs_data_set_bool(internal_settings, "restart_on_activate", true);
 
-    obs_source_t *internal = obs_source_create("ffmpeg_source", "Random Media Internal", internal_settings, nullptr);
-    obs_data_release(internal_settings);
-
-    // Получаем текущую сцену
-    obs_source_t *scene_src = obs_frontend_get_current_scene();
-    if (!scene_src) return;
-    obs_scene_t *scene = obs_scene_from_source(scene_src);
-
-    obs_sceneitem_t *item = obs_scene_add(scene, internal);
-    obs_source_release(internal);
-    obs_scene_release(scene);
-    obs_source_release(scene_src);
-
-    if (data->hide_on_end) {
-        signal_handler_t *signals = obs_source_get_signal_handler(internal);
-        signal_handler_connect_ref(signals, "media_ended", on_media_ended, item);
+    if (!data->internal) {
+        data->internal = obs_source_create("ffmpeg_source", "Random Media Internal", internal_settings, nullptr);
+    } else {
+        obs_source_update(data->internal, internal_settings);
     }
 
-    if (data->do_random_transform) {
-        struct obs_video_info ovi;
-        obs_get_video_info(&ovi);
-        uint32_t cw = ovi.base_width;
-        uint32_t ch = ovi.base_height;
+    obs_data_release(internal_settings);
 
-        // Область позиционирования
-        float pos_min_x = data->min_x > 0 ? data->min_x : 0;
-        float pos_min_y = data->min_y > 0 ? data->min_y : 0;
-        float pos_max_x = data->max_x > 0 ? data->max_x : cw;
-        float pos_max_y = data->max_y > 0 ? data->max_y : ch;
-
-        std::uniform_real_distribution<float> dist_pos_x(pos_min_x, pos_max_x);
-        std::uniform_real_distribution<float> dist_pos_y(pos_min_y, pos_max_y);
-        struct vec2 pos = {dist_pos_x(gen), dist_pos_y(gen)};
-        obs_sceneitem_set_pos(item, &pos);
-
-        // Масштаб в процентах (0.5 = 50%, 2.0 = 200%)
-        float scale_min = data->min_scale / 100.0f;
-        float scale_max = data->max_scale / 100.0f;
-        std::uniform_real_distribution<float> dist_scale(scale_min, scale_max);
-        float s_x = dist_scale(gen);
-        float s_y = data->preserve_aspect ? s_x : dist_scale(gen);
-        struct vec2 scale = {s_x, s_y};
-        obs_sceneitem_set_scale(item, &scale);
-
-        if (!data->disable_rot) {
-            std::uniform_real_distribution<float> dist_rot(data->min_rot, data->max_rot);
-            obs_sceneitem_set_rot(item, dist_rot(gen));
-        }
+    if (data->hide_on_end && data->internal && !data->media_signals) {
+        data->media_signals = obs_source_get_signal_handler(data->internal);
+        signal_handler_connect(data->media_signals, "media_ended", on_media_ended, data);
     }
 }
 
+// Имя источника в списке
 const char *get_name(void *) {
     return "Random Media Source";
+}
+
+// Обновление настроек (объявляем перед create)
+void update(void *d, obs_data_t *settings) {
+    random_media_data *data = static_cast<random_media_data *>(d);
+    data->folder = obs_data_get_string(settings, "folder");
+    data->do_random_transform = obs_data_get_bool(settings, "random_transform");
+    data->hide_on_end = obs_data_get_bool(settings, "hide_on_end");
+
+    if (data->hide_on_end && data->internal) {
+        if (!data->media_signals) {
+            data->media_signals = obs_source_get_signal_handler(data->internal);
+            signal_handler_connect(data->media_signals, "media_ended", on_media_ended, data);
+        }
+    } else if (data->media_signals) {
+        signal_handler_disconnect(data->media_signals, "media_ended", on_media_ended, data);
+        data->media_signals = nullptr;
+    }
+
+    update_file_list(data);
+    pick_random_file(data);
 }
 
 void *create(obs_data_t *settings, obs_source_t *source) {
     random_media_data *data = new random_media_data();
     data->source = source;
+    data->internal = nullptr;
     data->do_random_transform = false;
     data->hide_on_end = false;
-    data->min_scale = 50.0f;
-    data->max_scale = 200.0f;
-    data->min_rot = -180.0f;
-    data->max_rot = 180.0f;
-    data->disable_rot = false;
-    data->preserve_aspect = true;
-    data->min_x = 0;
-    data->min_y = 0;
-    data->max_x = 0;
-    data->max_y = 0;
-    data->allow_multiple = true;
+    data->media_signals = nullptr;
     update(data, settings);
     return data;
 }
 
 void destroy(void *d) {
     random_media_data *data = static_cast<random_media_data *>(d);
+    if (data->internal) {
+        if (data->media_signals) {
+            signal_handler_disconnect(data->media_signals, "media_ended", on_media_ended, data);
+        }
+        obs_source_release(data->internal);
+    }
     delete data;
-}
-
-void update(void *d, obs_data_t *settings) {
-    random_media_data *data = static_cast<random_media_data *>(d);
-    data->folder = obs_data_get_string(settings, "folder");
-    data->do_random_transform = obs_data_get_bool(settings, "random_transform");
-    data->hide_on_end = obs_data_get_bool(settings, "hide_on_end");
-    data->min_scale = static_cast<float>(obs_data_get_double(settings, "min_scale"));
-    data->max_scale = static_cast<float>(obs_data_get_double(settings, "max_scale"));
-    data->min_rot = static_cast<float>(obs_data_get_double(settings, "min_rot"));
-    data->max_rot = static_cast<float>(obs_data_get_double(settings, "max_rot"));
-    data->disable_rot = obs_data_get_bool(settings, "disable_rot");
-    data->preserve_aspect = obs_data_get_bool(settings, "preserve_aspect");
-    data->min_x = obs_data_get_int(settings, "min_x");
-    data->min_y = obs_data_get_int(settings, "min_y");
-    data->max_x = obs_data_get_int(settings, "max_x");
-    data->max_y = obs_data_get_int(settings, "max_y");
-    data->allow_multiple = obs_data_get_bool(settings, "allow_multiple");
-    update_file_list(data);
 }
 
 obs_properties_t *properties(void *) {
@@ -194,38 +152,76 @@ obs_properties_t *properties(void *) {
     obs_properties_add_path(props, "folder", "Folder", OBS_PATH_DIRECTORY, nullptr, nullptr);
     obs_properties_add_bool(props, "random_transform", "Apply Random Transform on Show");
     obs_properties_add_bool(props, "hide_on_end", "Hide when playback ends");
-    obs_properties_add_float(props, "min_scale", "Min Scale (%)", 10.0, 500.0, 1.0);
-    obs_properties_add_float(props, "max_scale", "Max Scale (%)", 10.0, 500.0, 1.0);
-    obs_properties_add_float(props, "min_rot", "Min Rotation (degrees)", -360.0, 360.0, 1.0);
-    obs_properties_add_float(props, "max_rot", "Max Rotation (degrees)", -360.0, 360.0, 1.0);
-    obs_properties_add_bool(props, "disable_rot", "Disable Rotation");
-    obs_properties_add_bool(props, "preserve_aspect", "Preserve Aspect Ratio");
-    obs_properties_add_int(props, "min_x", "Min X Position (px)", 0, 3840, 1);
-    obs_properties_add_int(props, "min_y", "Min Y Position (px)", 0, 2160, 1);
-    obs_properties_add_int(props, "max_x", "Max X Position (px)", 0, 3840, 1);
-    obs_properties_add_int(props, "max_y", "Max Y Position (px)", 0, 2160, 1);
-    obs_properties_add_bool(props, "allow_multiple", "Allow Multiple Instances Simultaneously");
     return props;
 }
 
 void activate(void *d) {
     random_media_data *data = static_cast<random_media_data *>(d);
-    spawn_random_media(data);
+    blog(LOG_INFO, "Random Media Source activated");
+
+    pick_random_file(data);
+
+    if (!data->do_random_transform) return;
+
+    obs_source_t *scene_src = obs_frontend_get_current_scene();
+    if (!scene_src) {
+        blog(LOG_WARNING, "No current scene found");
+        return;
+    }
+    obs_scene_t *scene = obs_scene_from_source(scene_src);
+    if (!scene) {
+        obs_source_release(scene_src);
+        return;
+    }
+
+    obs_scene_enum_items(
+        scene,
+        [](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+            random_media_data *data = static_cast<random_media_data *>(param);
+            if (obs_sceneitem_get_source(item) == data->source) {
+                struct obs_video_info ovi;
+                obs_get_video_info(&ovi);
+                float cw = static_cast<float>(ovi.base_width);
+                float ch = static_cast<float>(ovi.base_height);
+
+                std::random_device rd;
+                std::mt19937 gen(rd());
+                std::uniform_real_distribution<float> dist_pos_x(0.0f, cw);
+                std::uniform_real_distribution<float> dist_pos_y(0.0f, ch);
+                struct vec2 pos = {dist_pos_x(gen), dist_pos_y(gen)};
+                obs_sceneitem_set_pos(item, &pos);
+
+                std::uniform_real_distribution<float> dist_scale(0.5f, 2.0f);
+                float s = dist_scale(gen);
+                struct vec2 scale = {s, s};
+                obs_sceneitem_set_scale(item, &scale);
+
+                std::uniform_real_distribution<float> dist_rot(-180.0f, 180.0f);
+                obs_sceneitem_set_rot(item, dist_rot(gen));
+            }
+            return true;
+        },
+        data);
+
+    obs_scene_release(scene);
+    obs_source_release(scene_src);
 }
 
 void video_render(void *d, gs_effect_t *effect) {
-    // Не нужно, т.к. спавним отдельные источники
+    random_media_data *data = static_cast<random_media_data *>(d);
+    if (data->internal) obs_source_video_render(data->internal);
 }
 
 uint32_t get_width(void *d) {
-    return 0;  // Manager не имеет размера
+    random_media_data *data = static_cast<random_media_data *>(d);
+    return data->internal ? obs_source_get_width(data->internal) : 0;
 }
 
 uint32_t get_height(void *d) {
-    return 0;
+    random_media_data *data = static_cast<random_media_data *>(d);
+    return data->internal ? obs_source_get_height(data->internal) : 0;
 }
 
-// Структура info
 static const struct obs_source_info random_media_info = {
     .id             = "random_media_source",
     .type           = OBS_SOURCE_TYPE_INPUT,
@@ -246,5 +242,6 @@ OBS_DECLARE_MODULE()
 bool obs_module_load(void) {
     srand(static_cast<unsigned int>(time(nullptr)));
     obs_register_source(&random_media_info);
+    blog(LOG_INFO, "Random Media Source plugin loaded successfully");
     return true;
 }
