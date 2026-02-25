@@ -109,9 +109,10 @@ void spawn_random_media(random_media_data *data) {
     obs_data_release(s);
 
     if (media) {
-        obs_source_update(media, nullptr);  // Принудительно обновляем
-        obs_source_restart(media);  // Перезапускаем воспроизведение
-        os_sleep_ms(500);  // Даём ffmpeg время на загрузку
+        obs_source_update(media, nullptr);  // Обновляем
+        obs_source_reset(media);  // Сбрасываем и перезапускаем
+        obs_source_set_active(media, true);  // Активируем
+        os_sleep_ms(500);  // Даём время на загрузку файла
     }
 
     obs_source_t *scene_src = obs_frontend_get_current_scene();
