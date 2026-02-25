@@ -28,16 +28,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // Структура данных для источника
 struct random_media_data {
-    obs_source_t *source;  // Сам источник
-    obs_source_t *internal;  // Внутренний ffmpeg_source
+    obs_source_t *source;                  // Сам источник
+    obs_source_t *internal;                // Внутренний ffmpeg_source
     std::string folder;
-    bool do_random_transform;
-    bool hide_on_end;
-    signal_handler_t *media_signals;  // для хранения хэндлера сигналов
-    std::vector<std::string> file_list;  // Список файлов из папки
+    bool do_random_transform = false;
+    bool hide_on_end = false;
+    signal_handler_t *media_signals = nullptr;
+    std::vector<std::string> file_list;
 };
 
-// Список поддерживаемых расширений
+// Поддерживаемые расширения
 static const std::vector<std::string> media_extensions = {".mp4", ".mkv", ".avi", ".mov", ".jpg", ".png", ".gif"};
 
 bool has_media_extension(const std::string &filename) {
@@ -73,7 +73,7 @@ static void on_media_ended(void *param, calldata_t *cd) {
 void pick_random_file(random_media_data *data) {
     if (data->file_list.empty()) {
         blog(LOG_WARNING, "No media files in folder '%s' - skipping playback", data->folder.c_str());
-        return;  // ← защита от краша
+        return;  // Защита от краша
     }
 
     std::random_device rd;
@@ -101,12 +101,10 @@ void pick_random_file(random_media_data *data) {
     }
 }
 
-// Имя источника в списке
 const char *get_name(void *) {
     return "Random Media Source";
 }
 
-// Обновление настроек (объявляем ПЕРЕД create!)
 void update(void *d, obs_data_t *settings);
 
 void *create(obs_data_t *settings, obs_source_t *source) {
@@ -161,43 +159,38 @@ void update(void *d, obs_data_t *settings) {
 
 obs_properties_t *properties(void *) {
     obs_properties_t *props = obs_properties_create();
+
     obs_properties_add_path(props, "folder", "Folder", OBS_PATH_DIRECTORY, nullptr, nullptr);
     obs_properties_add_bool(props, "random_transform", "Apply Random Transform on Show");
     obs_properties_add_bool(props, "hide_on_end", "Hide when playback ends");
 
-    // Предупреждение о пустой папке (будет видно в UI свойств)
+    // Статическое предупреждение в UI свойств
     obs_property_t *warning = obs_properties_add_text(props, "warning", "Warning", OBS_TEXT_INFO);
-    obs_property_set_visible(warning, false);  // скрыто по умолчанию
-
-    // Модификатор: показываем предупреждение, если файлов нет
-    obs_properties_set_modified_callback(props, [](obs_properties_t *props, obs_property_t *prop, obs_data_t *settings) {
-        obs_property_t *warning = obs_properties_get(props, "warning");
-        obs_property_set_visible(warning, false);
-        obs_property_set_description(warning, "No media files found in the folder!");
-
-        // Можно добавить динамику, но пока просто статическое
-        return true;
-    });
+    obs_property_set_description(warning, "No media files found in the folder! Please add videos/images.");
 
     return props;
 }
 
 void activate(void *d) {
     random_media_data *data = static_cast<random_media_data *>(d);
+    blog(LOG_INFO, "Source activated");
+
     pick_random_file(data);
 
     if (!data->do_random_transform) return;
 
     obs_source_t *scene_src = obs_frontend_get_current_scene();
-    if (!scene_src) return;
+    if (!scene_src) {
+        blog(LOG_WARNING, "No current scene");
+        return;
+    }
     obs_scene_t *scene = obs_scene_from_source(scene_src);
     if (!scene) {
         obs_source_release(scene_src);
         return;
     }
 
-    obs_scene_enum_items(
-        scene,
+    obs_scene_enum_items(scene,
         [](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
             random_media_data *data = static_cast<random_media_data *>(param);
             if (obs_sceneitem_get_source(item) == data->source) {
@@ -265,29 +258,5 @@ bool obs_module_load(void) {
     srand(static_cast<unsigned int>(time(nullptr)));
     obs_register_source(&random_media_info);
     blog(LOG_INFO, "Random Media Source plugin loaded");
-    return true;
-}
-// Структура info для источника
-static const struct obs_source_info random_media_info = {
-    .id = "random_media_source",
-    .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_ASYNC_VIDEO,
-    .get_name = get_name,
-    .create = create,
-    .destroy = destroy,
-    .get_width = get_width,
-    .get_height = get_height,
-    .get_properties = properties,
-    .update = update,
-    .activate = activate,
-    .video_render = video_render,
-};
-
-// Инициализация модуля
-OBS_DECLARE_MODULE()
-
-bool obs_module_load(void) {
-    srand(static_cast<unsigned int>(time(nullptr)));  // Seed для rand
-    obs_register_source(&random_media_info);
     return true;
 }
