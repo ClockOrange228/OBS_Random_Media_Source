@@ -109,10 +109,9 @@ void spawn_random_media(random_media_data *data) {
     obs_data_release(s);
 
     if (media) {
-        // Активируем playback
-        obs_source_set_active(media, true);
-        // Даём время на загрузку (0.5 сек)
-        os_sleep_ms(500);
+        obs_source_update(media, nullptr);  // Принудительно обновляем
+        obs_source_restart(media);  // Перезапускаем воспроизведение
+        os_sleep_ms(500);  // Даём ffmpeg время на загрузку
     }
 
     obs_source_t *scene_src = obs_frontend_get_current_scene();
@@ -196,10 +195,10 @@ void update(void *d, obs_data_t *settings) {
     data->max_rot = static_cast<float>(obs_data_get_double(settings, "max_rot"));
     data->disable_rot = obs_data_get_bool(settings, "disable_rot");
     data->preserve_aspect = obs_data_get_bool(settings, "preserve_aspect");
-    data->min_x = obs_data_get_int(settings, "min_x");
-    data->min_y = obs_data_get_int(settings, "min_y");
-    data->max_x = obs_data_get_int(settings, "max_x");
-    data->max_y = obs_data_get_int(settings, "max_y");
+    data->min_x = static_cast<int>(obs_data_get_int(settings, "min_x"));
+    data->min_y = static_cast<int>(obs_data_get_int(settings, "min_y"));
+    data->max_x = static_cast<int>(obs_data_get_int(settings, "max_x"));
+    data->max_y = static_cast<int>(obs_data_get_int(settings, "max_y"));
     data->allow_multiple = obs_data_get_bool(settings, "allow_multiple");
 
     update_file_list(data);
