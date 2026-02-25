@@ -43,7 +43,8 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
 
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp)
 
-set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME OBS_Random_Media_Source
+)
 
 # Игнорируем unresolved symbols (OBS предоставит их при загрузке плагина)
 if(MSVC)
