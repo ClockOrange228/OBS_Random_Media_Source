@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // Структура данных источника
 struct random_media_data {
     obs_source_t *source = nullptr;
+    obs_source_t *internal = nullptr;
     std::string folder;
     bool do_random_transform = false;
     bool hide_on_end = false;
@@ -86,7 +87,10 @@ static void on_media_ended(void *param, calldata_t *cd) {
 }
 
 void spawn_random_media(random_media_data *data) {
-    if (data->file_list.empty()) return;
+    if (data->file_list.empty()) {
+        blog(LOG_WARNING, "No media files - skipping");
+        return;
+    }
 
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -104,9 +108,12 @@ void spawn_random_media(random_media_data *data) {
     obs_source_t *media = obs_source_create("ffmpeg_source", "Random Media", s, nullptr);
     obs_data_release(s);
 
-    // Активируем
-    obs_source_inc_active_refs(media);
-    obs_source_set_active(media, true);
+    if (media) {
+        // Активируем playback
+        obs_source_set_active(media, true);
+        // Даём время на загрузку (0.5 сек)
+        os_sleep_ms(500);
+    }
 
     obs_source_t *scene_src = obs_frontend_get_current_scene();
     if (!scene_src) {
@@ -126,15 +133,12 @@ void spawn_random_media(random_media_data *data) {
     obs_scene_release(scene);
     obs_source_release(scene_src);
 
-    if (data->hide_on_end) {
+    if (data->hide_on_end && item) {
         signal_handler_t *signals = obs_source_get_signal_handler(media);
         signal_handler_connect(signals, "media_ended", on_media_ended, item);
     }
 
-    if (data->do_random_transform) {
-        // Задержка для загрузки
-        os_sleep_ms(500);
-
+    if (data->do_random_transform && item) {
         struct obs_video_info ovi;
         obs_get_video_info(&ovi);
         float cw = static_cast<float>(ovi.base_width);
@@ -224,6 +228,8 @@ obs_properties_t *properties(void *) {
 
 void activate(void *d) {
     random_media_data *data = static_cast<random_media_data *>(d);
+    blog(LOG_INFO, "Activate called");
+
     spawn_random_media(data);
 }
 
@@ -231,23 +237,29 @@ void video_render(void *d, gs_effect_t *effect) {
     (void)d; (void)effect;
 }
 
-uint32_t get_width(void *d) { (void)d; return 0; }
+uint32_t get_width(void *d) {
+    (void)d;
+    return 0;
+}
 
-uint32_t get_height(void *d) { (void)d; return 0; }
+uint32_t get_height(void *d) {
+    (void)d;
+    return 0;
+}
 
 static const struct obs_source_info random_media_info = {
-    .id = "random_media_source",
-    .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_ASYNC_VIDEO,
-    .get_name = get_name,
-    .create = create,
-    .destroy = destroy,
-    .get_width = get_width,
-    .get_height = get_height,
+    .id             = "random_media_source",
+    .type           = OBS_SOURCE_TYPE_INPUT,
+    .output_flags   = OBS_SOURCE_ASYNC_VIDEO,
+    .get_name       = get_name,
+    .create         = create,
+    .destroy        = destroy,
+    .get_width      = get_width,
+    .get_height     = get_height,
     .get_properties = properties,
-    .update = update,
-    .activate = activate,
-    .video_render = video_render,
+    .update         = update,
+    .activate       = activate,
+    .video_render   = video_render,
 };
 
 OBS_DECLARE_MODULE()
