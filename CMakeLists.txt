@@ -40,6 +40,7 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
   CXX_STANDARD 20
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF
+  OUTPUT_NAME "OBS_Random_Media_Source"
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "OBS_Random_Media_Source")
