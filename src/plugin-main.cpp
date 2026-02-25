@@ -28,26 +28,24 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // Структура данных для источника
 struct random_media_data {
-    obs_source_t *source;  // Сам источник
-    obs_source_t *internal;  // Внутренний ffmpeg_source
+    obs_source_t *source;                  // Сам источник
+    obs_source_t *internal;                // Внутренний ffmpeg_source
     std::string folder;
-    bool do_random_transform;
-    bool hide_on_end;
-    signal_handler_t *media_signals;  // для хранения хэндлера сигналов
-    std::vector<std::string> file_list;  // Список файлов из папки
+    bool do_random_transform = false;
+    bool hide_on_end = false;
+    signal_handler_t *media_signals = nullptr;
+    std::vector<std::string> file_list;
 };
 
-// Список поддерживаемых расширений (можно расширить)
+// Поддерживаемые расширения
 static const std::vector<std::string> media_extensions = {".mp4", ".mkv", ".avi", ".mov", ".jpg", ".png", ".gif"};
 
-// Проверка расширения файла
 bool has_media_extension(const std::string &filename) {
     std::string ext = filename.substr(filename.find_last_of("."));
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     return std::find(media_extensions.begin(), media_extensions.end(), ext) != media_extensions.end();
 }
 
-// Обновление списка файлов из папки
 void update_file_list(random_media_data *data) {
     data->file_list.clear();
     os_dir_t *dir = os_opendir(data->folder.c_str());
@@ -62,16 +60,28 @@ void update_file_list(random_media_data *data) {
         }
         os_closedir(dir);
     }
+    blog(LOG_INFO, "Found %zu media files in folder '%s'", data->file_list.size(), data->folder.c_str());
 }
 
-// Выбор случайного файла и обновление внутреннего источника
+// Статическая функция для сигнала media_ended
+static void on_media_ended(void *param, calldata_t *cd) {
+    random_media_data *data = static_cast<random_media_data *>(param);
+    obs_source_set_hidden(data->source, true);
+    blog(LOG_INFO, "Media ended - source hidden");
+}
+
 void pick_random_file(random_media_data *data) {
-    if (data->file_list.empty()) return;
+    if (data->file_list.empty()) {
+        blog(LOG_WARNING, "No media files in folder '%s' - skipping playback", data->folder.c_str());
+        return;
+    }
 
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, data->file_list.size() - 1);
+    std::uniform_int_distribution<> dis(0, static_cast<int>(data->file_list.size() - 1));
     std::string random_file = data->file_list[dis(gen)];
+
+    blog(LOG_INFO, "Selected random file: %s", random_file.c_str());
 
     obs_data_t *internal_settings = obs_data_create();
     obs_data_set_string(internal_settings, "local_file", random_file.c_str());
@@ -84,14 +94,19 @@ void pick_random_file(random_media_data *data) {
     }
 
     obs_data_release(internal_settings);
+
+    if (data->hide_on_end && data->internal && !data->media_signals) {
+        data->media_signals = obs_source_get_signal_handler(data->internal);
+        signal_handler_connect(data->media_signals, "media_ended", on_media_ended, data);
+    }
 }
 
-// Callback: Имя источника
 const char *get_name(void *) {
     return "Random Media Source";
 }
 
-// Callback: Создание источника
+void update(void *d, obs_data_t *settings);
+
 void *create(obs_data_t *settings, obs_source_t *source) {
     random_media_data *data = new random_media_data();
     data->source = source;
@@ -103,24 +118,45 @@ void *create(obs_data_t *settings, obs_source_t *source) {
     return data;
 }
 
-// Callback: Уничтожение источника
 void destroy(void *d) {
-    random_media_data *data = (random_media_data *)d;
-    if (data->internal) obs_source_release(data->internal);
+    random_media_data *data = static_cast<random_media_data *>(d);
+    if (data->internal) {
+        if (data->media_signals) {
+            signal_handler_disconnect(data->media_signals, "media_ended", on_media_ended, data);
+        }
+        obs_source_release(data->internal);
+    }
     delete data;
 }
 
-// Callback: Обновление настроек (например, смена папки)
 void update(void *d, obs_data_t *settings) {
-    random_media_data *data = (random_media_data *)d;
+    random_media_data *data = static_cast<random_media_data *>(d);
     data->folder = obs_data_get_string(settings, "folder");
     data->do_random_transform = obs_data_get_bool(settings, "random_transform");
-    data->hide_on_end = obs_data_get_bool(settings, "hide_on_end");
+    bool new_hide_on_end = obs_data_get_bool(settings, "hide_on_end");
+
+    if (new_hide_on_end != data->hide_on_end) {
+        data->hide_on_end = new_hide_on_end;
+
+        if (data->internal) {
+            if (data->hide_on_end) {
+                if (!data->media_signals) {
+                    data->media_signals = obs_source_get_signal_handler(data->internal);
+                    signal_handler_connect(data->media_signals, "media_ended", on_media_ended, data);
+                }
+            } else {
+                if (data->media_signals) {
+                    signal_handler_disconnect(data->media_signals, "media_ended", on_media_ended, data);
+                    data->media_signals = nullptr;
+                }
+            }
+        }
+    }
+
     update_file_list(data);
     pick_random_file(data);
 }
 
-// Callback: Свойства (UI в OBS)
 obs_properties_t *properties(void *) {
     obs_properties_t *props = obs_properties_create();
     obs_properties_add_path(props, "folder", "Folder", OBS_PATH_DIRECTORY, nullptr, nullptr);
@@ -129,49 +165,46 @@ obs_properties_t *properties(void *) {
     return props;
 }
 
-// Callback: Активация источника (когда становится видимым)
 void activate(void *d) {
-    random_media_data *data = (random_media_data *)d;
-    pick_random_file(data);  // Новый случайный файл каждый раз при показе
+    random_media_data *data = static_cast<random_media_data *>(d);
+    blog(LOG_INFO, "Source activated");
+
+    pick_random_file(data);
 
     if (!data->do_random_transform) return;
 
-    // Получаем текущую сцену
     obs_source_t *scene_src = obs_frontend_get_current_scene();
-    if (!scene_src) return;
+    if (!scene_src) {
+        blog(LOG_WARNING, "No current scene");
+        return;
+    }
     obs_scene_t *scene = obs_scene_from_source(scene_src);
     if (!scene) {
         obs_source_release(scene_src);
         return;
     }
 
-    // Перечисляем items в сцене и ищем наш источник
-    obs_scene_enum_items(
-        scene,
+    obs_scene_enum_items(scene,
         [](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
-            random_media_data *data = (random_media_data *)param;
+            random_media_data *data = static_cast<random_media_data *>(param);
             if (obs_sceneitem_get_source(item) == data->source) {
-                // Получаем размер канваса
                 struct obs_video_info ovi;
                 obs_get_video_info(&ovi);
-                uint32_t cw = ovi.base_width;
-                uint32_t ch = ovi.base_height;
+                float cw = static_cast<float>(ovi.base_width);
+                float ch = static_cast<float>(ovi.base_height);
 
-                // Случайная позиция (0 to cw/ch)
                 std::random_device rd;
                 std::mt19937 gen(rd());
-                std::uniform_real_distribution<float> dist_pos_x(0.0f, (float)cw);
-                std::uniform_real_distribution<float> dist_pos_y(0.0f, (float)ch);
+                std::uniform_real_distribution<float> dist_pos_x(0.0f, cw);
+                std::uniform_real_distribution<float> dist_pos_y(0.0f, ch);
                 struct vec2 pos = {dist_pos_x(gen), dist_pos_y(gen)};
                 obs_sceneitem_set_pos(item, &pos);
 
-                // Случайный масштаб (0.5 to 2.0)
                 std::uniform_real_distribution<float> dist_scale(0.5f, 2.0f);
                 float s = dist_scale(gen);
-                struct vec2 scale = {s, s};  // Uniform scale
+                struct vec2 scale = {s, s};
                 obs_sceneitem_set_scale(item, &scale);
 
-                // Случайная ротация (-180 to 180)
                 std::uniform_real_distribution<float> dist_rot(-180.0f, 180.0f);
                 obs_sceneitem_set_rot(item, dist_rot(gen));
             }
@@ -183,46 +216,42 @@ void activate(void *d) {
     obs_source_release(scene_src);
 }
 
-// Callback: Рендеринг видео
 void video_render(void *d, gs_effect_t *effect) {
-    (void)effect;  // Игнорируем неиспользуемый параметр
-    random_media_data *data = (random_media_data *)d;
+    (void)effect;
+    random_media_data *data = static_cast<random_media_data *>(d);
     if (data->internal) obs_source_video_render(data->internal);
 }
 
-// Callback: Ширина
 uint32_t get_width(void *d) {
-    random_media_data *data = (random_media_data *)d;
+    random_media_data *data = static_cast<random_media_data *>(d);
     return data->internal ? obs_source_get_width(data->internal) : 0;
 }
 
-// Callback: Высота
 uint32_t get_height(void *d) {
-    random_media_data *data = (random_media_data *)d;
+    random_media_data *data = static_cast<random_media_data *>(d);
     return data->internal ? obs_source_get_height(data->internal) : 0;
 }
 
-// Структура info для источника
 static const struct obs_source_info random_media_info = {
-    .id = "random_media_source",
-    .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_ASYNC_VIDEO,
-    .get_name = get_name,
-    .create = create,
-    .destroy = destroy,
-    .update = update,
+    .id             = "random_media_source",
+    .type           = OBS_SOURCE_TYPE_INPUT,
+    .output_flags   = OBS_SOURCE_ASYNC_VIDEO,
+    .get_name       = get_name,
+    .create         = create,
+    .destroy        = destroy,
+    .get_width      = get_width,
+    .get_height     = get_height,
     .get_properties = properties,
-    .activate = activate,
-    .video_render = video_render,
-    .get_width = get_width,
-    .get_height = get_height,
+    .update         = update,
+    .activate       = activate,
+    .video_render   = video_render,
 };
 
-// Инициализация модуля
 OBS_DECLARE_MODULE()
 
 bool obs_module_load(void) {
-    srand(static_cast<unsigned int>(time(nullptr)));  // Seed для rand
+    srand(static_cast<unsigned int>(time(nullptr)));
     obs_register_source(&random_media_info);
+    blog(LOG_INFO, "Random Media Source plugin loaded");
     return true;
 }
