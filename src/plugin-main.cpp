@@ -37,9 +37,7 @@ struct random_media_data {
     std::vector<std::string> file_list;
 };
 
-static const std::vector<std::string> media_extensions = {
-    ".mp4", ".mkv", ".avi", ".mov", ".jpg", ".png", ".gif"
-};
+static const std::vector<std::string> media_extensions = {".mp4", ".mkv", ".avi", ".mov", ".jpg", ".png", ".gif"};
 
 bool has_media_extension(const std::string &filename) {
     size_t dot = filename.find_last_of(".");
@@ -70,12 +68,12 @@ static void on_media_ended(void *param, calldata_t *cd) {
     (void)cd;
     random_media_data *data = static_cast<random_media_data *>(param);
     obs_source_set_hidden(data->source, true);
-    blog(LOG_INFO, "Media ended - source hidden");
+    blog(LOG_INFO, "Media ended - hidden");
 }
 
 void pick_random_file(random_media_data *data) {
     if (data->file_list.empty()) {
-        blog(LOG_WARNING, "No media files in '%s' - skipping", data->folder.c_str());
+        blog(LOG_WARNING, "No media files - skipping");
         return;
     }
 
@@ -84,11 +82,13 @@ void pick_random_file(random_media_data *data) {
     std::uniform_int_distribution<> dis(0, static_cast<int>(data->file_list.size() - 1));
     std::string file = data->file_list[dis(gen)];
 
-    blog(LOG_INFO, "Selected file: %s", file.c_str());
+    blog(LOG_INFO, "Playing: %s", file.c_str());
 
     obs_data_t *s = obs_data_create();
     obs_data_set_string(s, "local_file", file.c_str());
     obs_data_set_bool(s, "is_local_file", true);
+    obs_data_set_bool(s, "restart_on_activate", true);
+    obs_data_set_bool(s, "clear_on_media_end", data->hide_on_end);
 
     if (!data->internal) {
         data->internal = obs_source_create("ffmpeg_source", "Random Internal", s, nullptr);
@@ -97,6 +97,13 @@ void pick_random_file(random_media_data *data) {
     }
 
     obs_data_release(s);
+
+    // КРИТИЧНО: активируем внутренний источник
+    obs_source_inc_active_refs(data->internal);
+    obs_source_set_active(data->internal, true);
+
+    // Даём ffmpeg 500 мс на загрузку файла и первого кадра
+    os_sleep_ms(500);
 
     if (data->hide_on_end && data->internal && !data->media_signals) {
         data->media_signals = obs_source_get_signal_handler(data->internal);
@@ -140,19 +147,16 @@ void update(void *d, obs_data_t *settings) {
 
 obs_properties_t *properties(void *) {
     obs_properties_t *props = obs_properties_create();
-
     obs_properties_add_path(props, "folder", "Folder", OBS_PATH_DIRECTORY, nullptr, nullptr);
     obs_properties_add_bool(props, "random_transform", "Apply Random Transform on Show");
     obs_properties_add_bool(props, "hide_on_end", "Hide when playback ends");
-
-    obs_property_t *warning = obs_properties_add_text(props, "warning", "Warning", OBS_TEXT_INFO);
-    obs_property_set_description(warning, "No media files found! Check folder path and extensions.");
-
     return props;
 }
 
 void activate(void *d) {
     random_media_data *data = static_cast<random_media_data *>(d);
+    blog(LOG_INFO, "Source activated");
+
     pick_random_file(data);
 
     if (!data->do_random_transform) return;
@@ -202,7 +206,9 @@ void activate(void *d) {
 void video_render(void *d, gs_effect_t *effect) {
     (void)effect;
     random_media_data *data = static_cast<random_media_data *>(d);
-    if (data->internal) obs_source_video_render(data->internal);
+    if (data->internal) {
+        obs_source_video_render(data->internal);
+    }
 }
 
 uint32_t get_width(void *d) {
