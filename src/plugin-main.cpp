@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/platform.h>
 #include <util/dstr.h>
 #include <graphics/vec2.h>
+#include <atomic>
 #include <random>
 #include <vector>
 #include <string>
@@ -170,21 +171,18 @@ static obs_sceneitem_t *spawn_one(random_media_data *data,
                                   const std::string &file,
                                   std::mt19937      &gen)
 {
-    obs_data_t *s = obs_data_create();
-    obs_data_set_string(s, "local_file",          file.c_str());
-    obs_data_set_bool  (s, "is_local_file",        true);
-    obs_data_set_bool  (s, "restart_on_activate",  true);
-    // "close_when_inactive" makes the source stop when the scene item is
-    // removed, avoiding dangling ffmpeg threads
-    obs_data_set_bool  (s, "close_when_inactive",  true);
-    obs_data_release(s);
-
     // Use a unique name so multiple items don't collide
     static std::atomic<int> uid{0};
     std::string name = std::string("RandomMedia_") + std::to_string(++uid);
 
+    obs_data_t *s = obs_data_create();
+    obs_data_set_string(s, "local_file",          file.c_str());
+    obs_data_set_bool  (s, "is_local_file",        true);
+    obs_data_set_bool  (s, "restart_on_activate",  true);
+    obs_data_set_bool  (s, "close_when_inactive",  true);
+
     obs_source_t *media = obs_source_create("ffmpeg_source", name.c_str(), s, nullptr);
-    // Note: obs_data is already released above; obs_source_create copies what it needs.
+    obs_data_release(s); // release AFTER create
 
     if (!media) {
         blog(LOG_ERROR, "[RandomMedia] Failed to create ffmpeg_source for: %s", file.c_str());
@@ -205,7 +203,7 @@ static obs_sceneitem_t *spawn_one(random_media_data *data,
 
     if (data->hide_on_end) {
         // Keep an extra ref on the source so on_media_ended can release it
-        obs_source_addref(media);
+        obs_source_get_ref(media);
         hide_ctx *ctx = new hide_ctx{item, media};
         signal_handler_t *sh = obs_source_get_signal_handler(media);
         signal_handler_connect(sh, "media_ended", on_media_ended, ctx);
