@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.28...3.30)
-
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCOPE)
 
 project(OBS_Random_Media_Source VERSION 1.0.0)
@@ -20,6 +19,11 @@ if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 endif()
+
+# obs-websocket-api.h — header-only vendor API (no linking needed)
+# Place the file at src/obs-websocket-api.h — download it from:
+# https://raw.githubusercontent.com/obsproject/obs-websocket/master/lib/obs-websocket-api.h
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 if(ENABLE_QT)
   find_package(Qt6 COMPONENTS Widgets Core)
@@ -42,17 +46,9 @@ set_target_properties(
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
-    OUTPUT_NAME "OBS_Random_Media_Source"
 )
 
 set_target_properties_plugin(
   ${CMAKE_PROJECT_NAME}
   PROPERTIES OUTPUT_NAME "OBS_Random_Media_Source"
 )
-
-if(MSVC)
-  target_link_options(
-    ${CMAKE_PROJECT_NAME}
-    PRIVATE /FORCE:UNRESOLVED /IGNORE:4088
-  )
-endif()
