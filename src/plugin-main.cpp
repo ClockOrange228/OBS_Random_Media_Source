@@ -19,7 +19,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-frontend-api.h>
 #include <obs-properties.h>
 #include <util/platform.h>
-#include "obs-websocket-api-mini.h"
+#include <util/calldata.h>
+#include <util/proc-handler.h>
+#include <graphics/vec2.h>
 #include <atomic>
 #include <mutex>
 #include <random>
@@ -30,11 +32,71 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("random_media_source", "en-US")
 
-static obs_websocket_vendor_t g_vendor = nullptr;
+// ============================================================
+//  Minimal inline vendor API (no obs-websocket-api.h needed)
+//  Uses only proc_handler which is part of libobs.
+// ============================================================
+typedef void *ws_vendor_ptr;
+typedef void (*ws_request_cb)(obs_data_t *req, obs_data_t *res, void *priv);
 
-// -------------------------------------------------------
-// Plugin settings struct
-// -------------------------------------------------------
+struct ws_cb_holder {
+	ws_request_cb callback;
+	void *priv_data;
+};
+
+static proc_handler_t *get_ws_ph(void)
+{
+	proc_handler_t *global_ph = obs_get_proc_handler();
+	if (!global_ph)
+		return nullptr;
+	calldata_t cd = {};
+	bool ok = proc_handler_call(global_ph, "obs_websocket_api_get_ph", &cd);
+	proc_handler_t *ret = ok ? (proc_handler_t *)calldata_ptr(&cd, "ph")
+				 : nullptr;
+	calldata_free(&cd);
+	return ret;
+}
+
+static ws_vendor_ptr vendor_register(const char *name)
+{
+	proc_handler_t *ws_ph = get_ws_ph();
+	if (!ws_ph) {
+		blog(LOG_INFO,
+		     "[RandomMedia] obs-websocket not available — vendor API disabled");
+		return nullptr;
+	}
+	calldata_t cd = {};
+	calldata_set_string(&cd, "vendor_name", name);
+	proc_handler_call(ws_ph, "obs_websocket_create_vendor", &cd);
+	ws_vendor_ptr vendor = calldata_ptr(&cd, "vendor");
+	calldata_free(&cd);
+	return vendor;
+}
+
+static bool vendor_add_request(ws_vendor_ptr vendor, const char *type,
+				ws_request_cb cb, void *priv)
+{
+	if (!vendor)
+		return false;
+	proc_handler_t *ws_ph = get_ws_ph();
+	if (!ws_ph)
+		return false;
+
+	auto *holder = new ws_cb_holder{cb, priv};
+	calldata_t cd = {};
+	calldata_set_ptr(&cd, "vendor", vendor);
+	calldata_set_string(&cd, "request_type", type);
+	calldata_set_ptr(&cd, "request_callback", holder);
+	bool ok = proc_handler_call(ws_ph,
+				    "obs_websocket_vendor_register_request",
+				    &cd);
+	calldata_free(&cd);
+	return ok;
+}
+
+// ============================================================
+//  Plugin data
+// ============================================================
 struct random_media_data {
 	obs_source_t *source = nullptr;
 	std::string folder;
@@ -57,12 +119,12 @@ struct random_media_data {
 
 static random_media_data *g_data = nullptr;
 
-// -------------------------------------------------------
-// File list
-// -------------------------------------------------------
+// ============================================================
+//  File list
+// ============================================================
 static const std::vector<std::string> MEDIA_EXTS = {
-	".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv",
-	".jpg", ".jpeg", ".png", ".gif"};
+	".mp4",  ".mkv",  ".avi",  ".mov", ".webm",
+	".flv",  ".jpg",  ".jpeg", ".png", ".gif"};
 
 static bool has_media_ext(const std::string &path)
 {
@@ -99,9 +161,9 @@ static void update_file_list(random_media_data *data)
 	     data->file_list.size(), data->folder.c_str());
 }
 
-// -------------------------------------------------------
-// hide_ctx — remove item when media ends
-// -------------------------------------------------------
+// ============================================================
+//  Media-ended callback
+// ============================================================
 struct hide_ctx {
 	random_media_data *data;
 	obs_sceneitem_t *item;
@@ -112,7 +174,7 @@ static void on_media_ended(void *param, calldata_t * /*cd*/)
 {
 	hide_ctx *ctx = static_cast<hide_ctx *>(param);
 	{
-		std::lock_guard<std::mutex> lock(ctx->data->active_mutex);
+		std::lock_guard<std::mutex> lk(ctx->data->active_mutex);
 		auto &v = ctx->data->active_items;
 		v.erase(std::remove(v.begin(), v.end(), ctx->item), v.end());
 	}
@@ -122,12 +184,11 @@ static void on_media_ended(void *param, calldata_t * /*cd*/)
 	blog(LOG_INFO, "[RandomMedia] Media ended — item removed");
 }
 
-// -------------------------------------------------------
-// Random transform
-// -------------------------------------------------------
+// ============================================================
+//  Random transform
+// ============================================================
 static void apply_random_transform(random_media_data *data,
-				   obs_sceneitem_t *item,
-				   std::mt19937 &gen)
+				   obs_sceneitem_t *item, std::mt19937 &gen)
 {
 	struct obs_video_info ovi = {};
 	obs_get_video_info(&ovi);
@@ -169,9 +230,9 @@ static void apply_random_transform(random_media_data *data,
 	}
 }
 
-// -------------------------------------------------------
-// Spawn one item
-// -------------------------------------------------------
+// ============================================================
+//  Spawn one item
+// ============================================================
 static std::atomic<int> s_uid{0};
 
 static void spawn_one(random_media_data *data, obs_scene_t *scene,
@@ -204,7 +265,7 @@ static void spawn_one(random_media_data *data, obs_scene_t *scene,
 	}
 
 	{
-		std::lock_guard<std::mutex> lock(data->active_mutex);
+		std::lock_guard<std::mutex> lk(data->active_mutex);
 		data->active_items.push_back(item);
 	}
 
@@ -213,7 +274,7 @@ static void spawn_one(random_media_data *data, obs_scene_t *scene,
 
 	if (data->hide_on_end) {
 		obs_source_get_ref(media);
-		hide_ctx *ctx = new hide_ctx{data, item, media};
+		auto *ctx = new hide_ctx{data, item, media};
 		signal_handler_connect(obs_source_get_signal_handler(media),
 				       "media_ended", on_media_ended, ctx);
 	}
@@ -222,35 +283,37 @@ static void spawn_one(random_media_data *data, obs_scene_t *scene,
 	blog(LOG_INFO, "[RandomMedia] Spawned: %s", file.c_str());
 }
 
-// -------------------------------------------------------
-// Main spawn
-// -------------------------------------------------------
+// ============================================================
+//  Main spawn entry point
+// ============================================================
 static void do_spawn(random_media_data *data)
 {
 	if (data->file_list.empty()) {
-		blog(LOG_WARNING, "[RandomMedia] No media files");
+		blog(LOG_WARNING, "[RandomMedia] No files — skipping");
 		return;
 	}
 	{
-		std::lock_guard<std::mutex> lock(data->active_mutex);
+		std::lock_guard<std::mutex> lk(data->active_mutex);
 		int active = static_cast<int>(data->active_items.size());
 		if (active >= data->max_active) {
 			blog(LOG_INFO,
-			     "[RandomMedia] Cap reached (%d/%d) — skip",
+			     "[RandomMedia] Cap %d/%d reached — skipping",
 			     active, data->max_active);
 			return;
 		}
 	}
 
 	obs_source_t *scene_src = obs_frontend_get_current_scene();
-	if (!scene_src)
+	if (!scene_src) {
+		blog(LOG_WARNING, "[RandomMedia] No current scene");
 		return;
+	}
 	obs_scene_t *scene = obs_scene_from_source(scene_src);
 
 	std::random_device rd;
 	std::mt19937 gen(rd());
-	std::uniform_int_distribution<size_t> pick(
-		0, data->file_list.size() - 1);
+	std::uniform_int_distribution<size_t> pick(0,
+						    data->file_list.size() - 1);
 
 	int count = std::max(1, data->spawn_count);
 	for (int i = 0; i < count; ++i)
@@ -259,22 +322,22 @@ static void do_spawn(random_media_data *data)
 	obs_source_release(scene_src);
 }
 
-// -------------------------------------------------------
-// WebSocket vendor callbacks
-// -------------------------------------------------------
+// ============================================================
+//  Vendor callbacks
+// ============================================================
 static void vendor_spawn_cb(obs_data_t * /*req*/, obs_data_t *res,
 			    void * /*priv*/)
 {
 	if (!g_data) {
 		obs_data_set_string(res, "status", "error");
-		obs_data_set_string(res, "message", "plugin not initialized");
+		obs_data_set_string(res, "message", "not initialized");
 		return;
 	}
 	do_spawn(g_data);
 	obs_data_set_string(res, "status", "ok");
-	std::lock_guard<std::mutex> lock(g_data->active_mutex);
+	std::lock_guard<std::mutex> lk(g_data->active_mutex);
 	obs_data_set_int(res, "active_count",
-			 static_cast<int>(g_data->active_items.size()));
+			 (long long)g_data->active_items.size());
 }
 
 static void vendor_reload_cb(obs_data_t * /*req*/, obs_data_t *res,
@@ -287,12 +350,12 @@ static void vendor_reload_cb(obs_data_t * /*req*/, obs_data_t *res,
 	update_file_list(g_data);
 	obs_data_set_string(res, "status", "ok");
 	obs_data_set_int(res, "file_count",
-			 static_cast<int>(g_data->file_list.size()));
+			 (long long)g_data->file_list.size());
 }
 
-// -------------------------------------------------------
-// OBS source callbacks
-// -------------------------------------------------------
+// ============================================================
+//  Source callbacks
+// ============================================================
 static const char *source_get_name(void *)
 {
 	return "Random Media Source";
@@ -302,7 +365,7 @@ static void source_update(void *d, obs_data_t *settings);
 
 static void *source_create(obs_data_t *settings, obs_source_t *source)
 {
-	random_media_data *data = new random_media_data();
+	auto *data = new random_media_data();
 	data->source = source;
 	g_data = data;
 	source_update(data, settings);
@@ -311,7 +374,7 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
 
 static void source_destroy(void *d)
 {
-	random_media_data *data = static_cast<random_media_data *>(d);
+	auto *data = static_cast<random_media_data *>(d);
 	if (g_data == data)
 		g_data = nullptr;
 	delete data;
@@ -319,10 +382,9 @@ static void source_destroy(void *d)
 
 static void source_update(void *d, obs_data_t *settings)
 {
-	random_media_data *data = static_cast<random_media_data *>(d);
-
+	auto *data = static_cast<random_media_data *>(d);
 	std::string new_folder = obs_data_get_string(settings, "folder");
-	bool folder_changed = (new_folder != data->folder);
+	bool changed = (new_folder != data->folder);
 
 	data->folder = new_folder;
 	data->do_random_transform =
@@ -348,14 +410,13 @@ static void source_update(void *d, obs_data_t *settings)
 	data->max_active =
 		static_cast<int>(obs_data_get_int(settings, "max_active"));
 
-	if (folder_changed)
+	if (changed)
 		update_file_list(data);
 }
 
 static obs_properties_t *source_properties(void *)
 {
 	obs_properties_t *props = obs_properties_create();
-
 	obs_properties_add_path(props, "folder", "Media Folder",
 				OBS_PATH_DIRECTORY, nullptr, nullptr);
 	obs_properties_add_bool(props, "random_transform",
@@ -366,10 +427,10 @@ static obs_properties_t *source_properties(void *)
 				 1000.0, 1.0);
 	obs_properties_add_bool(props, "preserve_aspect",
 				"Preserve Aspect Ratio");
-	obs_properties_add_float(props, "min_rot", "Min Rotation (°)", -360.0,
-				 360.0, 1.0);
-	obs_properties_add_float(props, "max_rot", "Max Rotation (°)", -360.0,
-				 360.0, 1.0);
+	obs_properties_add_float(props, "min_rot", "Min Rotation (deg)",
+				 -360.0, 360.0, 1.0);
+	obs_properties_add_float(props, "max_rot", "Max Rotation (deg)",
+				 -360.0, 360.0, 1.0);
 	obs_properties_add_bool(props, "disable_rot", "Disable Rotation");
 	obs_properties_add_int(props, "min_x", "Min X (px)", 0, 7680, 1);
 	obs_properties_add_int(props, "min_y", "Min Y (px)", 0, 4320, 1);
@@ -381,7 +442,6 @@ static obs_properties_t *source_properties(void *)
 			       10, 1);
 	obs_properties_add_int(props, "max_active", "Max Simultaneous Videos",
 			       1, 20, 1);
-
 	return props;
 }
 
@@ -399,7 +459,7 @@ static void source_defaults(obs_data_t *settings)
 
 static void source_activate(void *d)
 {
-	blog(LOG_INFO, "[RandomMedia] Activated (manual/fallback trigger)");
+	blog(LOG_INFO, "[RandomMedia] Activated");
 	do_spawn(static_cast<random_media_data *>(d));
 }
 
@@ -407,14 +467,15 @@ static uint32_t source_get_width(void *)
 {
 	return 1;
 }
+
 static uint32_t source_get_height(void *)
 {
 	return 1;
 }
 
-// -------------------------------------------------------
-// Source info + module load
-// -------------------------------------------------------
+// ============================================================
+//  Module registration
+// ============================================================
 static struct obs_source_info random_media_info = {};
 
 bool obs_module_load(void)
@@ -437,23 +498,19 @@ bool obs_module_load(void)
 	return true;
 }
 
-// obs_module_post_load is called after ALL plugins (including obs-websocket)
-// are loaded — the correct place to register vendor requests.
+// Called after ALL plugins load — safe to call obs-websocket proc handler
 void obs_module_post_load(void)
 {
-	g_vendor = obs_websocket_register_vendor("random_media_source");
-	if (!g_vendor) {
-		blog(LOG_WARNING,
-		     "[RandomMedia] obs-websocket unavailable — vendor API disabled");
+	ws_vendor_ptr vendor = vendor_register("random_media_source");
+	if (!vendor) {
+		blog(LOG_INFO,
+		     "[RandomMedia] Vendor API unavailable — "
+		     "use source activate as fallback trigger");
 		return;
 	}
-
-	obs_websocket_vendor_register_request(g_vendor, "spawn",
-					      vendor_spawn_cb, nullptr);
-	obs_websocket_vendor_register_request(g_vendor, "reload_files",
-					      vendor_reload_cb, nullptr);
-
+	vendor_add_request(vendor, "spawn", vendor_spawn_cb, nullptr);
+	vendor_add_request(vendor, "reload_files", vendor_reload_cb, nullptr);
 	blog(LOG_INFO,
-	     "[RandomMedia] obs-websocket vendor registered. "
-	     "Requests: 'spawn', 'reload_files'");
+	     "[RandomMedia] WebSocket vendor registered — "
+	     "requests: 'spawn', 'reload_files'");
 }
