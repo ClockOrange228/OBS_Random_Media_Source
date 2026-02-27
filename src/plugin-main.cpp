@@ -19,8 +19,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-frontend-api.h>
 #include <obs-properties.h>
 #include <util/platform.h>
-#include <util/calldata.h>
-#include <util/proc-handler.h>
+#include <callback/calldata.h>
+#include <callback/proc.h>
 #include <graphics/vec2.h>
 #include <atomic>
 #include <mutex>
