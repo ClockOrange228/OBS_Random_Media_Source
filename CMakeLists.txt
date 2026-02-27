@@ -20,11 +20,6 @@ if(ENABLE_FRONTEND_API)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 endif()
 
-# obs-websocket-api.h — header-only vendor API (no linking needed)
-# Place the file at src/obs-websocket-api.h — download it from:
-# https://raw.githubusercontent.com/obsproject/obs-websocket/master/lib/obs-websocket-api.h
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-
 if(ENABLE_QT)
   find_package(Qt6 COMPONENTS Widgets Core)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
@@ -34,9 +29,16 @@ if(ENABLE_QT)
   )
   set_target_properties(
     ${CMAKE_PROJECT_NAME}
-    PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON
+    PROPERTIES
+      AUTOMOC ON
+      AUTOUIC ON
+      AUTORCC ON
   )
 endif()
+
+# obs-websocket-api-mini.h lives next to plugin-main.cpp in src/
+# It is a self-contained vendor API header with no external dependencies.
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp)
 
