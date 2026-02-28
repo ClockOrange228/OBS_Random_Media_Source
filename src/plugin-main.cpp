@@ -28,7 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 
 OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE("OBS_Random_Media_Source", "en-US")
+OBS_MODULE_USE_DEFAULT_LOCALE("z_NasratReward", "en-US")
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
@@ -366,7 +366,6 @@ static void spawn_one(random_media_data *data, obs_scene_t *scene,
 // ============================================================
 static void do_spawn(random_media_data *data)
 {
-	try_register_vendor();
 	if (data->file_list.empty()) {
 		blog(LOG_WARNING,
 		     "[RandomMedia] No files in '%s' — skipping",
