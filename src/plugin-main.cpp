@@ -119,7 +119,19 @@ struct random_media_data {
 	bool disable_rot = false;
 
 	// Volume
-	float volume_db = 0.0f; // dB, applied to spawned source
+	float volume_db = -6.0f;
+
+	// Compressor
+	bool use_compressor = true;
+	float comp_threshold = -18.0f;
+	float comp_ratio = 4.0f;
+	float comp_attack = 6.0f;
+	float comp_release = 60.0f;
+	float comp_output_gain = 0.0f;
+
+	// Limiter
+	bool use_limiter = true;
+	float limiter_threshold = -1.0f;
 
 	int spawn_count = 1;
 	int max_active = 5;
@@ -206,6 +218,51 @@ static void on_media_ended(void *param, calldata_t * /*cd*/)
 // ============================================================
 //  Spawn one item
 // ============================================================
+// ============================================================
+//  Audio filters: compressor + limiter
+// ============================================================
+static void apply_audio_filters(obs_source_t *src,
+				random_media_data *data)
+{
+	// ---- Compressor ----
+	if (data->use_compressor) {
+		obs_data_t *cs = obs_data_create();
+		obs_data_set_double(cs, "threshold",
+				    data->comp_threshold);
+		obs_data_set_double(cs, "ratio", data->comp_ratio);
+		obs_data_set_double(cs, "attack_time",
+				    data->comp_attack);
+		obs_data_set_double(cs, "release_time",
+				    data->comp_release);
+		obs_data_set_double(cs, "output_gain",
+				    data->comp_output_gain);
+		obs_source_t *f = obs_source_create(
+			"compressor_filter", "RMS_Compressor", cs,
+			nullptr);
+		obs_data_release(cs);
+		if (f) {
+			obs_source_filter_add(src, f);
+			obs_source_release(f);
+		}
+	}
+
+	// ---- Limiter ----
+	if (data->use_limiter) {
+		obs_data_t *ls = obs_data_create();
+		obs_data_set_double(ls, "threshold",
+				    data->limiter_threshold);
+		obs_data_set_double(ls, "release_time", 60.0);
+		obs_source_t *f = obs_source_create(
+			"limiter_filter", "RMS_Limiter", ls,
+			nullptr);
+		obs_data_release(ls);
+		if (f) {
+			obs_source_filter_add(src, f);
+			obs_source_release(f);
+		}
+	}
+}
+
 static std::atomic<int> s_uid{0};
 
 static void spawn_one(random_media_data *data, obs_scene_t *scene,
@@ -239,6 +296,9 @@ static void spawn_one(random_media_data *data, obs_scene_t *scene,
 	// Monitor + Output so streamer can hear it
 	obs_source_set_monitoring_type(
 		media, OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT);
+
+	// Compressor + Limiter filters
+	apply_audio_filters(media, data);
 
 	obs_sceneitem_t *item = obs_scene_add(scene, media);
 	if (!item) {
@@ -488,6 +548,22 @@ static void source_update(void *d, obs_data_t *settings)
 		obs_data_get_bool(settings, "disable_rot");
 	data->volume_db = (float)obs_data_get_double(
 		settings, "volume_db");
+	data->use_compressor =
+		obs_data_get_bool(settings, "use_compressor");
+	data->comp_threshold = (float)obs_data_get_double(
+		settings, "comp_threshold");
+	data->comp_ratio = (float)obs_data_get_double(
+		settings, "comp_ratio");
+	data->comp_attack = (float)obs_data_get_double(
+		settings, "comp_attack");
+	data->comp_release = (float)obs_data_get_double(
+		settings, "comp_release");
+	data->comp_output_gain = (float)obs_data_get_double(
+		settings, "comp_output_gain");
+	data->use_limiter =
+		obs_data_get_bool(settings, "use_limiter");
+	data->limiter_threshold = (float)obs_data_get_double(
+		settings, "limiter_threshold");
 	data->spawn_count =
 		(int)obs_data_get_int(settings, "spawn_count");
 	data->max_active =
@@ -523,6 +599,33 @@ static obs_properties_t *source_properties(void *priv)
 	obs_properties_add_float_slider(
 		props, "volume_db", "Volume (dB)", -60.0, 0.0,
 		0.5);
+
+	// Compressor group
+	obs_properties_add_bool(props, "use_compressor",
+				"Enable Compressor");
+	obs_properties_add_float_slider(
+		props, "comp_threshold",
+		"  Compressor Threshold (dB)", -60.0, 0.0, 0.5);
+	obs_properties_add_float_slider(props, "comp_ratio",
+					"  Compressor Ratio", 1.0,
+					32.0, 0.5);
+	obs_properties_add_float_slider(
+		props, "comp_attack",
+		"  Compressor Attack (ms)", 1.0, 100.0, 1.0);
+	obs_properties_add_float_slider(
+		props, "comp_release",
+		"  Compressor Release (ms)", 1.0, 1000.0, 1.0);
+	obs_properties_add_float_slider(
+		props, "comp_output_gain",
+		"  Compressor Makeup Gain (dB)", -32.0, 32.0,
+		0.5);
+
+	// Limiter group
+	obs_properties_add_bool(props, "use_limiter",
+				"Enable Limiter");
+	obs_properties_add_float_slider(
+		props, "limiter_threshold",
+		"  Limiter Ceiling (dB)", -30.0, 0.0, 0.5);
 
 	// --- Transform ---
 	obs_properties_add_bool(props, "random_transform",
@@ -581,6 +684,21 @@ static void source_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "max_active", 5);
 	obs_data_set_default_double(settings, "volume_db",
 				    -6.0);
+	obs_data_set_default_bool(settings, "use_compressor",
+				  true);
+	obs_data_set_default_double(settings, "comp_threshold",
+				    -18.0);
+	obs_data_set_default_double(settings, "comp_ratio",
+				    4.0);
+	obs_data_set_default_double(settings, "comp_attack",
+				    6.0);
+	obs_data_set_default_double(settings, "comp_release",
+				    60.0);
+	obs_data_set_default_double(settings, "comp_output_gain",
+				    0.0);
+	obs_data_set_default_bool(settings, "use_limiter", true);
+	obs_data_set_default_double(settings,
+				    "limiter_threshold", -1.0);
 }
 
 static uint32_t source_get_width(void *)
