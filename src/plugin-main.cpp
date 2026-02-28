@@ -19,8 +19,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-frontend-api.h>
 #include <obs-properties.h>
 #include <util/platform.h>
-#include <callback/calldata.h>
-#include <callback/proc.h>
 #include <graphics/vec2.h>
 #include <atomic>
 #include <mutex>
@@ -39,66 +37,9 @@ MODULE_EXPORT const char *obs_module_description(void)
 }
 
 // ============================================================
-//  Minimal inline vendor API (no obs-websocket-api.h needed)
+//  obs-websocket vendor API (using official header from OBS)
 // ============================================================
-typedef void *ws_vendor_ptr;
-typedef void (*ws_request_cb)(obs_data_t *req, obs_data_t *res,
-			      void *priv);
-
-struct ws_cb_holder {
-	ws_request_cb callback;
-	void *priv_data;
-};
-
-static proc_handler_t *get_ws_ph(void)
-{
-	proc_handler_t *gph = obs_get_proc_handler();
-	if (!gph)
-		return nullptr;
-	calldata_t cd = {};
-	bool ok =
-		proc_handler_call(gph, "obs_websocket_api_get_ph", &cd);
-	proc_handler_t *ret =
-		ok ? (proc_handler_t *)calldata_ptr(&cd, "ph") : nullptr;
-	calldata_free(&cd);
-	return ret;
-}
-
-static ws_vendor_ptr vendor_register(const char *name)
-{
-	proc_handler_t *ws_ph = get_ws_ph();
-	if (!ws_ph) {
-		blog(LOG_INFO,
-		     "[RandomMedia] obs-websocket not available"
-		     " — vendor API disabled");
-		return nullptr;
-	}
-	calldata_t cd = {};
-	calldata_set_string(&cd, "vendor_name", name);
-	proc_handler_call(ws_ph, "obs_websocket_create_vendor", &cd);
-	ws_vendor_ptr vendor = calldata_ptr(&cd, "vendor");
-	calldata_free(&cd);
-	return vendor;
-}
-
-static bool vendor_add_request(ws_vendor_ptr vendor, const char *type,
-				ws_request_cb cb, void *priv)
-{
-	if (!vendor)
-		return false;
-	proc_handler_t *ws_ph = get_ws_ph();
-	if (!ws_ph)
-		return false;
-	auto *holder = new ws_cb_holder{cb, priv};
-	calldata_t cd = {};
-	calldata_set_ptr(&cd, "vendor", vendor);
-	calldata_set_string(&cd, "request_type", type);
-	calldata_set_ptr(&cd, "request_callback", holder);
-	bool ok = proc_handler_call(
-		ws_ph, "obs_websocket_vendor_register_request", &cd);
-	calldata_free(&cd);
-	return ok;
-}
+#include "obs-websocket-api.h"
 
 // ============================================================
 //  Plugin data
@@ -150,18 +91,27 @@ static void vendor_spawn_cb(obs_data_t *, obs_data_t *,
 static void vendor_reload_cb(obs_data_t *, obs_data_t *,
 			     void *);
 
+static obs_websocket_vendor g_vendor = nullptr;
+
 static void try_register_vendor(void)
 {
 	if (g_vendor_registered)
 		return;
-	ws_vendor_ptr vendor =
-		vendor_register("random_media_source");
-	if (!vendor)
+	g_vendor =
+		obs_websocket_register_vendor(
+			"random_media_source");
+	if (!g_vendor) {
+		blog(LOG_WARNING,
+		     "[RandomMedia] vendor register"
+		     " failed — not ready yet");
 		return;
-	vendor_add_request(vendor, "spawn",
-			   vendor_spawn_cb, nullptr);
-	vendor_add_request(vendor, "reload_files",
-			   vendor_reload_cb, nullptr);
+	}
+	obs_websocket_vendor_register_request(
+		g_vendor, "spawn",
+		vendor_spawn_cb, nullptr);
+	obs_websocket_vendor_register_request(
+		g_vendor, "reload_files",
+		vendor_reload_cb, nullptr);
 	g_vendor_registered = true;
 	blog(LOG_INFO,
 	     "[RandomMedia] WebSocket vendor ready"
