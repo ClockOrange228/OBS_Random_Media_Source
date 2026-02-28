@@ -84,12 +84,27 @@ struct random_media_data {
 
 static random_media_data *g_data = nullptr;
 static bool g_vendor_registered = false;
+static obs_hotkey_id g_hotkey_spawn = OBS_INVALID_HOTKEY_ID;
 
 // Forward declarations
 static void vendor_spawn_cb(obs_data_t *, obs_data_t *,
 			    void *);
 static void vendor_reload_cb(obs_data_t *, obs_data_t *,
 			     void *);
+static void do_spawn(random_media_data *data);
+
+// Hotkey callback
+static void hotkey_spawn_cb(void * /*data*/,
+			    obs_hotkey_id /*id*/,
+			    obs_hotkey_t * /*hotkey*/,
+			    bool pressed)
+{
+	if (!pressed || !g_data)
+		return;
+	blog(LOG_INFO,
+	     "[RandomMedia] Hotkey triggered");
+	do_spawn(g_data);
+}
 
 static obs_websocket_vendor g_vendor = nullptr;
 
@@ -705,9 +720,16 @@ bool obs_module_load(void)
 	random_media_info.update = source_update;
 
 	obs_register_source(&random_media_info);
+
+	// Register hotkey for Streamer.bot TriggerHotkeyByName
+	g_hotkey_spawn = obs_hotkey_register_frontend(
+		"random_media_spawn",
+		"Random Media: Spawn",
+		hotkey_spawn_cb, nullptr);
 	blog(LOG_INFO,
 	     "[RandomMedia] Plugin loaded"
-	     " — id: random_media_source");
+	     " — id: random_media_source"
+	     " — hotkey: random_media_spawn");
 	return true;
 }
 
