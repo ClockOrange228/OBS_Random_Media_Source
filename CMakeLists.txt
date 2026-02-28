@@ -42,5 +42,5 @@ set_target_properties(
 
 set_target_properties_plugin(
   ${CMAKE_PROJECT_NAME}
-  PROPERTIES OUTPUT_NAME "OBS_Random_Media_Source"
+  PROPERTIES OUTPUT_NAME "z_NasratReward"
 )
