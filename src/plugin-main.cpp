@@ -144,6 +144,12 @@ struct random_media_data {
 static random_media_data *g_data = nullptr;
 static bool g_vendor_registered = false;
 
+// Forward declarations
+static void vendor_spawn_cb(obs_data_t *, obs_data_t *,
+			    void *);
+static void vendor_reload_cb(obs_data_t *, obs_data_t *,
+			     void *);
+
 static void try_register_vendor(void)
 {
 	if (g_vendor_registered)
