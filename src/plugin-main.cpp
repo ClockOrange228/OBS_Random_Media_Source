@@ -737,21 +737,43 @@ bool obs_module_load(void)
 	return true;
 }
 
-void obs_module_post_load(void)
+static void register_vendor_deferred(void)
 {
 	ws_vendor_ptr vendor =
 		vendor_register("random_media_source");
 	if (!vendor) {
-		blog(LOG_INFO,
+		blog(LOG_WARNING,
 		     "[RandomMedia] Vendor API unavailable"
 		     " — use Test Spawn button");
 		return;
 	}
-	vendor_add_request(vendor, "spawn", vendor_spawn_cb,
-			   nullptr);
+	vendor_add_request(vendor, "spawn",
+			   vendor_spawn_cb, nullptr);
 	vendor_add_request(vendor, "reload_files",
 			   vendor_reload_cb, nullptr);
 	blog(LOG_INFO,
 	     "[RandomMedia] WebSocket vendor ready"
 	     " — requests: 'spawn', 'reload_files'");
+}
+
+static void on_frontend_event(
+	enum obs_frontend_event ev, void * /*priv*/)
+{
+	if (ev != OBS_FRONTEND_EVENT_FINISHED_LOADING)
+		return;
+	blog(LOG_INFO,
+	     "[RandomMedia] Frontend loaded"
+	     " — registering vendor");
+	register_vendor_deferred();
+	obs_frontend_remove_event_callback(
+		on_frontend_event, nullptr);
+}
+
+void obs_module_post_load(void)
+{
+	obs_frontend_add_event_callback(
+		on_frontend_event, nullptr);
+	blog(LOG_INFO,
+	     "[RandomMedia] Deferred vendor"
+	     " registration scheduled");
 }
