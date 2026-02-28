@@ -97,25 +97,53 @@ static void try_register_vendor(void)
 {
 	if (g_vendor_registered)
 		return;
+
+	// Debug: check if global proc handler exists
+	proc_handler_t *gph = obs_get_proc_handler();
+	blog(LOG_INFO,
+	     "[RandomMedia] try_register: gph=%p",
+	     (void *)gph);
+	if (gph) {
+		// Check if obs-websocket proc is registered
+		calldata_t cd = {0, 0, 0, 0};
+		bool ok = proc_handler_call(
+			gph,
+			"obs_websocket_api_get_ph",
+			&cd);
+		proc_handler_t *ws_ph =
+			ok ? (proc_handler_t *)
+				     calldata_ptr(&cd, "ph")
+			   : nullptr;
+		calldata_free(&cd);
+		blog(LOG_INFO,
+		     "[RandomMedia] try_register:"
+		     " api_get_ph ok=%d ws_ph=%p",
+		     (int)ok, (void *)ws_ph);
+	}
+
 	g_vendor =
 		obs_websocket_register_vendor(
 			"random_media_source");
 	if (!g_vendor) {
 		blog(LOG_WARNING,
 		     "[RandomMedia] vendor register"
-		     " failed — not ready yet");
+		     " failed — obs-ws ph not ready");
 		return;
 	}
-	obs_websocket_vendor_register_request(
+	bool ok1 = obs_websocket_vendor_register_request(
 		g_vendor, "spawn",
 		vendor_spawn_cb, nullptr);
-	obs_websocket_vendor_register_request(
+	bool ok2 = obs_websocket_vendor_register_request(
 		g_vendor, "reload_files",
 		vendor_reload_cb, nullptr);
+	blog(LOG_INFO,
+	     "[RandomMedia] vendor requests:"
+	     " spawn=%d reload=%d",
+	     (int)ok1, (int)ok2);
 	g_vendor_registered = true;
 	blog(LOG_INFO,
-	     "[RandomMedia] WebSocket vendor ready"
-	     " — requests: 'spawn', 'reload_files'");
+	     "[RandomMedia] WebSocket vendor READY"
+	     " — send 'spawn' to trigger");
 }
 
 // ============================================================
@@ -715,7 +743,7 @@ bool obs_module_load(void)
 
 void obs_module_post_load(void)
 {
-	// Vendor registered lazily on first spawn attempt
 	blog(LOG_INFO,
-	     "[RandomMedia] Plugin post-load done");
+	     "[RandomMedia] post_load: attempting vendor reg...");
+	try_register_vendor();
 }
